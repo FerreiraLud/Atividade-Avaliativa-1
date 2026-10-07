@@ -1,3 +1,5 @@
+import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
@@ -13,6 +15,8 @@ import {
 import Pokemon from "../../interface/Pokemon";
 import Requests from "../../service/PokemonsRequests";
 
+const FAVORITES_STORAGE_KEY = "favorite-pokemon-ids";
+
 export default function ListPokemon() {
     const [pokemons, setPokemons] = useState<Pokemon[]>([]);
     const [filteredPokemons, setFilteredPokemons] = useState<Pokemon[]>([]);
@@ -21,6 +25,9 @@ export default function ListPokemon() {
     const [isLoadingSearch, setIsLoadingSearch] = useState(false);
     const [isMoreLoading, setIsMoreLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
+    const [favoritePokemonIds, setFavoritePokemonIds] = useState<number[]>([]);
+    const [areFavoritesLoaded, setAreFavoritesLoaded] = useState(false);
+    const [showFavorites, setShowFavorites] = useState(false);
 
     const handleFetchPokemon = async (currentOffset: number, append = false) => {
         try {
@@ -58,6 +65,41 @@ export default function ListPokemon() {
     useEffect(() => {
         handleFetchPokemon(0, false);
     }, []);
+
+    useEffect(() => {
+        let isActive = true;
+
+        const loadFavorites = async () => {
+            try {
+                const storedFavorites = await AsyncStorage.getItem(FAVORITES_STORAGE_KEY);
+                if (storedFavorites) {
+                    const parsedFavorites: unknown = JSON.parse(storedFavorites);
+                    if (Array.isArray(parsedFavorites) && isActive) {
+                        setFavoritePokemonIds(parsedFavorites.filter(
+                            (id): id is number => Number.isInteger(id)
+                        ));
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to load favorite pokemons:", error);
+            } finally {
+                if (isActive) {
+                    setAreFavoritesLoaded(true);
+                }
+            }
+        };
+
+        loadFavorites();
+        return () => {
+            isActive = false;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!areFavoritesLoaded) return;
+        AsyncStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favoritePokemonIds))
+            .catch((error) => console.error("Failed to save favorite pokemons:", error));
+    }, [areFavoritesLoaded, favoritePokemonIds]);
 
     const handleLoadMore = () => {
         if (isLoading || isMoreLoading || !hasMore || searchQuery.trim() !== "") {
@@ -113,6 +155,19 @@ export default function ListPokemon() {
         return `#${String(id).padStart(3, "0")}`;
     };
 
+    const toggleFavorite = (pokemonId?: number) => {
+        if (!pokemonId) return;
+        setFavoritePokemonIds((currentFavorites) =>
+            currentFavorites.includes(pokemonId)
+                ? currentFavorites.filter((id) => id !== pokemonId)
+                : [...currentFavorites, pokemonId]
+        );
+    };
+
+    const visiblePokemons = showFavorites
+        ? filteredPokemons.filter((pokemon) => favoritePokemonIds.includes(pokemon.pokemon_id ?? -1))
+        : filteredPokemons;
+
     const renderFooter = () => {
         if (!isMoreLoading) return null;
         return (
@@ -148,6 +203,22 @@ export default function ListPokemon() {
                     autoCorrect={false}
                     clearButtonMode="while-editing"
                 />
+                <Pressable
+                    style={[styles.favoritesButton, showFavorites && styles.favoritesButtonActive]}
+                    onPress={() => setShowFavorites((showingFavorites) => !showingFavorites)}
+                    disabled={!areFavoritesLoaded}
+                    accessibilityRole="button"
+                    accessibilityLabel={showFavorites ? "Mostrar todos os Pokémons" : "Mostrar Pokémons favoritos"}
+                >
+                    <Ionicons
+                        name={showFavorites ? "heart" : "heart-outline"}
+                        size={18}
+                        color={showFavorites ? "#FFFFFF" : "#E53E3E"}
+                    />
+                    <Text style={[styles.favoritesButtonText, showFavorites && styles.favoritesButtonTextActive]}>
+                        {showFavorites ? "Todos" : `Favoritos (${favoritePokemonIds.length})`}
+                    </Text>
+                </Pressable>
             </View>
 
             {isLoadingSearch ? (
@@ -155,13 +226,15 @@ export default function ListPokemon() {
                     <ActivityIndicator size="large" color="#FF3E3E" />
                     <Text style={styles.loadingText}>Buscando Pokémon...</Text>
                 </View>
-            ) : filteredPokemons.length === 0 ? (
+            ) : visiblePokemons.length === 0 ? (
                 <View style={styles.center}>
-                    <Text style={styles.noResultsText}>Nenhum Pokémon encontrado</Text>
+                    <Text style={styles.noResultsText}>
+                        {showFavorites ? "Nenhum Pokémon favorito selecionado" : "Nenhum Pokémon encontrado"}
+                    </Text>
                 </View>
             ) : (
                 <FlatList
-                    data={filteredPokemons}
+                    data={visiblePokemons}
                     keyExtractor={(item) => item.pokemon_name}
                     numColumns={2}
                     showsVerticalScrollIndicator={false}
@@ -169,6 +242,24 @@ export default function ListPokemon() {
                     contentContainerStyle={styles.listContent}
                     renderItem={({ item }) => (
                         <Pressable style={styles.card} onPress={() => item.pokemon_id && router.push(`/pokemon/${item.pokemon_id}` as any)}>
+                            <Pressable
+                                style={styles.favoriteButton}
+                                disabled={!areFavoritesLoaded}
+                                onPress={(event) => {
+                                    event.stopPropagation();
+                                    toggleFavorite(item.pokemon_id);
+                                }}
+                                accessibilityRole="button"
+                                accessibilityLabel={favoritePokemonIds.includes(item.pokemon_id ?? -1)
+                                    ? `Remover ${formatName(item.pokemon_name)} dos favoritos`
+                                    : `Adicionar ${formatName(item.pokemon_name)} aos favoritos`}
+                            >
+                                <Ionicons
+                                    name={favoritePokemonIds.includes(item.pokemon_id ?? -1) ? "heart" : "heart-outline"}
+                                    size={20}
+                                    color={favoritePokemonIds.includes(item.pokemon_id ?? -1) ? "#E53E3E" : "#718096"}
+                                />
+                            </Pressable>
                             {/* ID Badge */}
                             <View style={styles.idBadge}>
                                 <Text style={styles.idText}>{formatId(item.pokemon_id)}</Text>
@@ -258,6 +349,31 @@ const styles = StyleSheet.create({
         color: "#2D3748",
         fontWeight: "500",
     },
+    favoritesButton: {
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+        marginTop: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: "#FED7D7",
+        backgroundColor: "#FFF5F5",
+    },
+    favoritesButtonActive: {
+        backgroundColor: "#E53E3E",
+        borderColor: "#E53E3E",
+    },
+    favoritesButtonText: {
+        color: "#C53030",
+        fontSize: 13,
+        fontWeight: "700",
+    },
+    favoritesButtonTextActive: {
+        color: "#FFFFFF",
+    },
     listContent: {
         padding: 12,
         paddingBottom: 40,
@@ -281,6 +397,18 @@ const styles = StyleSheet.create({
         elevation: 3,
         borderWidth: 1,
         borderColor: "#EDF2F7",
+    },
+    favoriteButton: {
+        position: "absolute",
+        top: 8,
+        left: 8,
+        zIndex: 1,
+        width: 36,
+        height: 36,
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 18,
+        backgroundColor: "#FFFFFF",
     },
     idBadge: {
         position: "absolute",
